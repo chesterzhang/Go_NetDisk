@@ -139,10 +139,12 @@
                     cell.innerHTML = data[i].LastUpdated;
 
                     cell = x.insertCell();
+                    cell.innerHTML = ""
                     cell.innerHTML = '<button class="btn btn-success" ' +
                         'style="height:30px;margin:5px 0;"' +
-                        'onClick = "downloadFile(\'http://localhost:8080/file/' +
-                        'downloadurl?filehash=' + data[i].FileHash + '&' + queryParams() + '\')">下载</button>';
+                        'onClick = "downloadFile(\'/file/' +
+                        'downloadurl?filehash=' + data[i].FileHash + '&' + localStorage.getItem("username") + '&' +
+                        + localStorage.getItem("token") +'\')">下载</button>';
                 }
             }
         });
