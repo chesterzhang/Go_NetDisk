@@ -3,6 +3,7 @@ package handler
 import (
 	dblayer "Go_NetDisk/db"
 	"Go_NetDisk/meta"
+	"Go_NetDisk/store/oss"
 	"Go_NetDisk/util"
 	"encoding/json"
 	"fmt"
@@ -12,7 +13,6 @@ import (
 	"os"
 	"strconv"
 	"time"
-
 )
 
 // 文件元信息
@@ -37,7 +37,8 @@ func UploadHandler(w http.ResponseWriter, r * http.Request)  {
 		io.WriteString(w,string(data))
 	}else if r.Method=="POST" {
 
-		file, head, err:= r.FormFile("file") //接收前端上传来的文件, 字符串与前端的 id 相同
+		//接收前端上传来的文件, FormFile 参数与前端的 id 相同
+		file, head, err:= r.FormFile("file")
 		if err!=nil {
 			 fmt.Printf("failed to get data, err:%s \n", err.Error())
 			return
@@ -45,13 +46,14 @@ func UploadHandler(w http.ResponseWriter, r * http.Request)  {
 
 		defer file.Close()
 
+		//创建 文件元信息
 		fileMeta:= meta.FileMeta{
 			FileName: head.Filename,
 			Location: "./temp/" + head.Filename,
 			UploadDt: time.Now().Format("2006-01-02 15:04:05"),
-
 		}
 
+		// 将文件写入本地存储
 		newFile, err :=os.Create(fileMeta.Location)
 		if err!=nil {
 			fmt.Printf("failed to create file, err:%s \n", err.Error())
@@ -65,27 +67,32 @@ func UploadHandler(w http.ResponseWriter, r * http.Request)  {
 			return
 		}
 
-		newFile.Seek(0,0)
-		fileMeta.FileSha1 = util.FileSha1(newFile)
-		//fmt.Println("file hash : ", fileMeta.FileSha1) //05810d75c1b69d5e68d019f36341f5e7261f7128
+		// 继续完善文件元信息
+		newFile.Seek(0,0) // 方法用于移动文件读取指针到指定位置
+		fileMeta.FileSha1 = util.FileSha1(newFile) // 获取 hash 值
+		newFile.Seek(0,0) // 方法用于移动文件读取指针到指定位置
 
-		suc :=meta.UpdateFileMetaDB(fileMeta)// 持久化数据, 将文件 fileMeta 存储到mysql中
+		// 将文件写入 oss
+		ossPath := "oss/" + fileMeta.FileSha1
+		err = oss.Bucket().PutObject(ossPath, newFile)
+		if err != nil {
+			fmt.Println(err.Error())
+			w.Write([]byte("Upload failed!"))
+			return
+		}
+		fileMeta.Location = ossPath
+
+
+		// 持久化数据, 将文件元信息 存储到mysql中
+		suc :=meta.UpdateFileMetaDB(fileMeta)
 		if !suc {
 			w.Write([]byte("Faile to update file in tbl_file."))
 		}
 
-		//http.Redirect(w,r,"/file/upload/suc", http.StatusFound)
-
 		// 更新用户文件表记录
 		r.ParseForm()
-		username := r.Form.Get("username") // bug 已修复
-		//token:=r.Form.Get("token") // bug 已修复
-		//fmt.Println("username:"+username)
-		//fmt.Println("token:"+token)
+		username := r.Form.Get("username")
 
-		//if username=="" {
-		//	panic("cannot get user name")
-		//}
 		suc = dblayer.OnUserFileUploadFinished(username, fileMeta.FileSha1,
 			fileMeta.FileName, fileMeta.FileSize)
 		if suc {
@@ -124,7 +131,7 @@ func GetFileMetaHander(w http.ResponseWriter, r * http.Request)  {
 
 // 获取 指定个数的文件, 按照上传时间先后顺序
 func FileQueryHandler(w http.ResponseWriter, r * http.Request){
-	//fmt.Println("enter FileQueryHandler")
+	//fmt.Println("enter FileQueryHandler") //ok here
 	r.ParseForm()
 	limitCnt,_:= strconv.Atoi(r.Form.Get("limit")) // 解析 limit 参数并转化为 int 类型
 	//fileMetas:=meta.GetLastFileMetas(limitCnt)
@@ -135,6 +142,7 @@ func FileQueryHandler(w http.ResponseWriter, r * http.Request){
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
+	//fmt.Println(userFiles) // 这里是没有问题的
 
 	data, err:=json.Marshal(userFiles)
 	if err!=nil {
@@ -270,3 +278,13 @@ func TryFastUploadHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write(resp.JSONBytes())
 	return
 }
+
+// DownloadURLHandler:  生成文件的下载地址
+func DownloadURLHandler(w http.ResponseWriter, r *http.Request) {
+	r.ParseForm()
+	filehash := r.Form.Get("filehash")
+	row, _ := dblayer.GetFileMeta(filehash)
+	signedURL := oss.DownloadURL(row.FileAddr.String)
+	w.Write([]byte(signedURL))
+}
+
